@@ -42,14 +42,16 @@ type Tab = 'registrations' | 'attendance' | 'allowedEmails';
 export default function DashboardPage() {
   const [registrations, setRegistrations] = useState<RegistrationRecord[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  // initialLoading is true only on the very first load — never set back to true after that
+  const [initialLoading, setInitialLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('registrations');
   const [selectedUnit, setSelectedUnit] = useState('All Units');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
   // Allowed emails state
   const [allowedEmails, setAllowedEmails] = useState<string[]>([]);
-  const [emailsLoading, setEmailsLoading] = useState(false);
+  // emailsInitialLoading is true only before the first fetch of allowed emails
+  const [emailsInitialLoading, setEmailsInitialLoading] = useState(true);
   const [newEmail, setNewEmail] = useState('');
   const [addError, setAddError] = useState('');
   const [importStatus, setImportStatus] = useState('');
@@ -60,26 +62,35 @@ export default function DashboardPage() {
         fetch('/api/registrations'),
         fetch('/api/attendance'),
       ]);
-      if (regRes.ok) setRegistrations(await regRes.json());
-      if (attRes.ok) setAttendance(await attRes.json());
+      // Only update state if the response is valid — never wipe existing data on error
+      if (regRes.ok) {
+        const data = await regRes.json();
+        if (Array.isArray(data)) setRegistrations(data);
+      }
+      if (attRes.ok) {
+        const data = await attRes.json();
+        if (Array.isArray(data)) setAttendance(data);
+      }
       setLastRefresh(new Date());
-    } catch { /* ignore */ }
-    finally { setLoading(false); }
+    } catch { /* ignore — keep existing data on network error */ }
+    finally { setInitialLoading(false); }
   }, []);
 
+  // Fetch once on mount — NO auto-refresh interval (was causing flicker every 15s)
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 15000);
-    return () => clearInterval(interval);
   }, [fetchAll]);
 
   const fetchAllowedEmails = useCallback(async () => {
-    setEmailsLoading(true);
+    // Do NOT set a loading flag that clears the list — just silently update in background
     try {
       const res = await fetch('/api/allowed-emails');
-      if (res.ok) setAllowedEmails(await res.json());
-    } catch { /* ignore */ }
-    finally { setEmailsLoading(false); }
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) setAllowedEmails(data);
+      }
+    } catch { /* ignore — keep existing data */ }
+    finally { setEmailsInitialLoading(false); }
   }, []);
 
   useEffect(() => {
@@ -301,21 +312,21 @@ export default function DashboardPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 28 }}>
           <div className="card" style={{ padding: 18 }}>
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>Registered</p>
-            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--ink)', lineHeight: 1 }}>{loading ? '—' : registrations.length}</p>
+            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--ink)', lineHeight: 1 }}>{initialLoading ? '—' : registrations.length}</p>
           </div>
           <div className="card" style={{ padding: 18 }}>
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>Checked In</p>
-            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--red)', lineHeight: 1 }}>{loading ? '—' : attendance.length}</p>
+            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--red)', lineHeight: 1 }}>{initialLoading ? '—' : attendance.length}</p>
           </div>
           <div className="card" style={{ padding: 18 }}>
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>Not Yet In</p>
             <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--ink)', lineHeight: 1 }}>
-              {loading ? '—' : Math.max(0, registrations.length - attendance.length)}
+              {initialLoading ? '—' : Math.max(0, registrations.length - attendance.length)}
             </p>
           </div>
           <div className="card" style={{ padding: 18 }}>
             <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>Business Units</p>
-            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--ink)', lineHeight: 1 }}>{loading ? '—' : Object.keys(byUnit).length}</p>
+            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 40, color: 'var(--ink)', lineHeight: 1 }}>{initialLoading ? '—' : Object.keys(byUnit).length}</p>
           </div>
         </div>
 
@@ -389,9 +400,126 @@ export default function DashboardPage() {
           </div>
 
           <div style={{ overflowX: 'auto' }}>
-            {loading ? (
+            {initialLoading ? (
               <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 13 }}>
                 // Loading...
+              </div>
+            ) : tab === 'allowedEmails' ? (
+              <div style={{ padding: 24 }}>
+                {/* Import + Add row */}
+                <div style={{ display: 'flex', gap: 10, marginBottom: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                  {/* Import file */}
+                  <label style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    background: 'var(--ink)', color: '#fff', borderRadius: 6,
+                    padding: '8px 16px', fontSize: 11, fontFamily: "'DM Mono', monospace",
+                    cursor: 'pointer', letterSpacing: '0.06em', whiteSpace: 'nowrap',
+                  }}>
+                    ↑ Import Excel / CSV
+                    <input
+                      type="file" accept=".xlsx,.xls,.csv,.txt,text/plain,text/csv"
+                      style={{ display: 'none' }}
+                      onChange={handleImportFile}
+                    />
+                  </label>
+
+                  {/* Delete All */}
+                  {allowedEmails.length > 0 && (
+                    <button
+                      onClick={handleDeleteAll}
+                      style={{
+                        background: 'none', border: '0.5px solid var(--red)',
+                        color: 'var(--red)', borderRadius: 6, padding: '8px 16px',
+                        fontSize: 11, fontFamily: "'DM Mono', monospace", cursor: 'pointer',
+                        letterSpacing: '0.06em', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      ✕ Delete All ({allowedEmails.length})
+                    </button>
+                  )}
+
+                  {/* Manual add */}
+                  <div style={{ display: 'flex', gap: 6, flex: 1, minWidth: 260 }}>
+                    <input
+                      type="email"
+                      placeholder="Add single email..."
+                      value={newEmail}
+                      onChange={e => { setNewEmail(e.target.value); setAddError(''); }}
+                      onKeyDown={e => e.key === 'Enter' && handleAddEmail()}
+                      style={{
+                        flex: 1, padding: '8px 12px', fontSize: 12,
+                        fontFamily: "'DM Mono', monospace",
+                        border: addError ? '1px solid var(--red)' : '0.5px solid var(--border)',
+                        borderRadius: 6, background: 'var(--bg)', color: 'var(--ink)', outline: 'none',
+                      }}
+                    />
+                    <button
+                      onClick={handleAddEmail}
+                      style={{
+                        background: 'var(--red)', color: '#fff', border: 'none',
+                        borderRadius: 6, padding: '8px 16px', fontSize: 11,
+                        fontFamily: "'DM Mono', monospace", cursor: 'pointer',
+                        letterSpacing: '0.06em', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      + Add
+                    </button>
+                  </div>
+                </div>
+
+                {addError && (
+                  <p style={{ fontSize: 11, color: 'var(--red)', fontFamily: "'DM Mono', monospace", marginBottom: 10 }}>
+                    // {addError}
+                  </p>
+                )}
+                {importStatus && (
+                  <p style={{ fontSize: 11, color: '#00a050', fontFamily: "'DM Mono', monospace", marginBottom: 10 }}>
+                    // {importStatus}
+                  </p>
+                )}
+
+                <p style={{ fontSize: 10, color: 'var(--muted)', fontFamily: "'DM Mono', monospace", marginBottom: 14, letterSpacing: '0.06em' }}>
+                  TOTAL: {allowedEmails.length} EMAIL{allowedEmails.length !== 1 ? 'S' : ''} — only these addresses can register.
+                </p>
+
+                {/* Show spinner only on the very first load of this tab, keep data visible on re-fetches */}
+                {emailsInitialLoading ? (
+                  <div style={{ color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 13 }}>// Loading...</div>
+                ) : allowedEmails.length === 0 ? (
+                  <div style={{ color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 13 }}>// No allowed emails yet.</div>
+                ) : (
+                  <div style={{ maxHeight: 420, overflowY: 'auto', border: '0.5px solid var(--border)', borderRadius: 8 }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: 'var(--bg)', position: 'sticky', top: 0 }}>
+                          <th style={{ padding: '8px 14px', textAlign: 'left', fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '0.5px solid var(--border)' }}>#</th>
+                          <th style={{ padding: '8px 14px', textAlign: 'left', fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '0.5px solid var(--border)' }}>Email</th>
+                          <th style={{ padding: '8px 14px', textAlign: 'right', fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '0.5px solid var(--border)' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allowedEmails.map((email, i) => (
+                          <tr key={email} style={{ borderBottom: '0.5px solid var(--border)', background: i % 2 === 0 ? 'var(--white)' : 'var(--bg)' }}>
+                            <td style={{ padding: '8px 14px', color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 11 }}>{i + 1}</td>
+                            <td style={{ padding: '8px 14px', color: 'var(--ink)', fontFamily: "'DM Mono', monospace" }}>{email}</td>
+                            <td style={{ padding: '8px 14px', textAlign: 'right' }}>
+                              <button
+                                onClick={() => handleDeleteEmail(email)}
+                                style={{
+                                  background: 'none', border: '0.5px solid var(--border)',
+                                  color: 'var(--muted)', borderRadius: 4, padding: '3px 10px',
+                                  fontSize: 10, fontFamily: "'DM Mono', monospace", cursor: 'pointer',
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             ) : tab === 'registrations' ? (
               filteredRegs.length === 0 ? (
@@ -492,125 +620,6 @@ export default function DashboardPage() {
                   </tbody>
                 </table>
               )
-            )}
-
-            {/* Allowed Emails Tab */}
-            {tab === 'allowedEmails' && (
-              <div style={{ padding: 24 }}>
-                {/* Import + Add row */}
-                <div style={{ display: 'flex', gap: 10, marginBottom: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                  {/* Import file */}
-                  <label style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    background: 'var(--ink)', color: '#fff', borderRadius: 6,
-                    padding: '8px 16px', fontSize: 11, fontFamily: "'DM Mono', monospace",
-                    cursor: 'pointer', letterSpacing: '0.06em', whiteSpace: 'nowrap',
-                  }}>
-                    ↑ Import Excel / CSV
-                    <input
-                      type="file" accept=".xlsx,.xls,.csv,.txt,text/plain,text/csv"
-                      style={{ display: 'none' }}
-                      onChange={handleImportFile}
-                    />
-                  </label>
-
-                  {/* Delete All */}
-                  {allowedEmails.length > 0 && (
-                    <button
-                      onClick={handleDeleteAll}
-                      style={{
-                        background: 'none', border: '0.5px solid var(--red)',
-                        color: 'var(--red)', borderRadius: 6, padding: '8px 16px',
-                        fontSize: 11, fontFamily: "'DM Mono', monospace", cursor: 'pointer',
-                        letterSpacing: '0.06em', whiteSpace: 'nowrap',
-                      }}
-                    >
-                      ✕ Delete All ({allowedEmails.length})
-                    </button>
-                  )}
-
-                  {/* Manual add */}
-                  <div style={{ display: 'flex', gap: 6, flex: 1, minWidth: 260 }}>
-                    <input
-                      type="email"
-                      placeholder="Add single email..."
-                      value={newEmail}
-                      onChange={e => { setNewEmail(e.target.value); setAddError(''); }}
-                      onKeyDown={e => e.key === 'Enter' && handleAddEmail()}
-                      style={{
-                        flex: 1, padding: '8px 12px', fontSize: 12,
-                        fontFamily: "'DM Mono', monospace",
-                        border: addError ? '1px solid var(--red)' : '0.5px solid var(--border)',
-                        borderRadius: 6, background: 'var(--bg)', color: 'var(--ink)', outline: 'none',
-                      }}
-                    />
-                    <button
-                      onClick={handleAddEmail}
-                      style={{
-                        background: 'var(--red)', color: '#fff', border: 'none',
-                        borderRadius: 6, padding: '8px 16px', fontSize: 11,
-                        fontFamily: "'DM Mono', monospace", cursor: 'pointer',
-                        letterSpacing: '0.06em', whiteSpace: 'nowrap',
-                      }}
-                    >
-                      + Add
-                    </button>
-                  </div>
-                </div>
-
-                {addError && (
-                  <p style={{ fontSize: 11, color: 'var(--red)', fontFamily: "'DM Mono', monospace", marginBottom: 10 }}>
-                    // {addError}
-                  </p>
-                )}
-                {importStatus && (
-                  <p style={{ fontSize: 11, color: '#00a050', fontFamily: "'DM Mono', monospace", marginBottom: 10 }}>
-                    // {importStatus}
-                  </p>
-                )}
-
-                <p style={{ fontSize: 10, color: 'var(--muted)', fontFamily: "'DM Mono', monospace", marginBottom: 14, letterSpacing: '0.06em' }}>
-                  TOTAL: {allowedEmails.length} EMAIL{allowedEmails.length !== 1 ? 'S' : ''} — only these addresses can register.
-                </p>
-
-                {emailsLoading ? (
-                  <div style={{ color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 13 }}>// Loading...</div>
-                ) : allowedEmails.length === 0 ? (
-                  <div style={{ color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 13 }}>// No allowed emails yet.</div>
-                ) : (
-                  <div style={{ maxHeight: 420, overflowY: 'auto', border: '0.5px solid var(--border)', borderRadius: 8 }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ background: 'var(--bg)', position: 'sticky', top: 0 }}>
-                          <th style={{ padding: '8px 14px', textAlign: 'left', fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '0.5px solid var(--border)' }}>#</th>
-                          <th style={{ padding: '8px 14px', textAlign: 'left', fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '0.5px solid var(--border)' }}>Email</th>
-                          <th style={{ padding: '8px 14px', textAlign: 'right', fontFamily: "'DM Mono', monospace", fontSize: 10, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '0.5px solid var(--border)' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {allowedEmails.map((email, i) => (
-                          <tr key={email} style={{ borderBottom: '0.5px solid var(--border)', background: i % 2 === 0 ? 'var(--white)' : 'var(--bg)' }}>
-                            <td style={{ padding: '8px 14px', color: 'var(--muted)', fontFamily: "'DM Mono', monospace", fontSize: 11 }}>{i + 1}</td>
-                            <td style={{ padding: '8px 14px', color: 'var(--ink)', fontFamily: "'DM Mono', monospace" }}>{email}</td>
-                            <td style={{ padding: '8px 14px', textAlign: 'right' }}>
-                              <button
-                                onClick={() => handleDeleteEmail(email)}
-                                style={{
-                                  background: 'none', border: '0.5px solid var(--border)',
-                                  color: 'var(--muted)', borderRadius: 4, padding: '3px 10px',
-                                  fontSize: 10, fontFamily: "'DM Mono', monospace", cursor: 'pointer',
-                                }}
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
             )}
           </div>
         </div>

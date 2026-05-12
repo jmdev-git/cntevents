@@ -9,14 +9,14 @@ const DATA_FILE =
     : path.join(process.cwd(), 'data', 'allowed_emails.json');
 
 function getAllowedEmails(): string[] {
-  // Try file first
   try {
     if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch { /* fall through */ }
 
-  // Fallback to .env
+  // Fallback to .env only if file is missing or empty
   return (process.env.ALLOWED_EMAILS || '')
     .split(',')
     .map(e => e.trim().toLowerCase())
@@ -24,10 +24,11 @@ function getAllowedEmails(): string[] {
 }
 
 export async function POST(req: NextRequest) {
-  const { email } = await req.json();
+  const body = await req.json();
+  const email = (body?.email ?? '').trim().toLowerCase();
   if (!email) return NextResponse.json({ valid: false });
 
   const allowed = getAllowedEmails();
-  const valid = allowed.includes(email.trim().toLowerCase());
+  const valid = allowed.includes(email);
   return NextResponse.json({ valid });
 }
