@@ -1,19 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-
-// Use /tmp on serverless (Vercel), fallback to local data dir in dev
-const DATA_FILE = process.env.NODE_ENV === 'production'
-  ? path.join(os.tmpdir(), 'cnt_attendance.json')
-  : path.join(process.cwd(), 'data', 'attendance.json');
-
-function ensureFile() {
-  const dir = path.dirname(DATA_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '[]', 'utf-8');
-}
+import { db } from '@/lib/db';
+import { attendance } from '@/lib/schema';
+import { eq, asc } from 'drizzle-orm';
 
 export interface AttendanceRecord {
   id: string;
@@ -26,26 +15,31 @@ export interface AttendanceRecord {
   scannedAt: string;
 }
 
-function readRecords(): AttendanceRecord[] {
-  ensureFile();
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
-  } catch {
-    return [];
-  }
-}
-
-function writeRecords(records: AttendanceRecord[]) {
-  ensureFile();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(records, null, 2), 'utf-8');
-}
-
+// GET — list all attendance records (admin only)
 export async function GET() {
   const session = await auth();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  return NextResponse.json(readRecords());
+
+  const rows = await db
+    .select()
+    .from(attendance)
+    .orderBy(asc(attendance.scannedAt));
+
+  const records: AttendanceRecord[] = rows.map(r => ({
+    id: r.id,
+    registrationId: r.registrationId,
+    name: r.name,
+    email: r.email,
+    birthday: r.birthday,
+    department: r.department,
+    businessUnit: r.businessUnit,
+    scannedAt: r.scannedAt.toISOString(),
+  }));
+
+  return NextResponse.json(records);
 }
 
+// POST — record a check-in (admin/scanner only)
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -57,33 +51,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
-  const records = readRecords();
-  const already = records.find(r => r.registrationId === registrationId);
-  if (already) {
-    return NextResponse.json({ duplicate: true, record: already });
+  // Prevent duplicate check-ins
+  const existing = await db
+    .select()
+    .from(attendance)
+    .where(eq(attendance.registrationId, registrationId))
+    .limit(1);
+
+  if (existing.length > 0) {
+    const r = existing[0];
+    return NextResponse.json({
+      duplicate: true,
+      record: { ...r, scannedAt: r.scannedAt.toISOString() },
+    });
   }
 
-  const newRecord: AttendanceRecord = {
-    id: crypto.randomUUID(),
-    registrationId,
-    name: name || '',
-    email,
-    birthday: birthday || '',
-    department: department || '',
-    businessUnit: businessUnit || '',
-    scannedAt: new Date().toISOString(),
-  };
+  const [inserted] = await db
+    .insert(attendance)
+    .values({
+      id: crypto.randomUUID(),
+      registrationId,
+      name: name || '',
+      email: email.trim().toLowerCase(),
+      birthday: birthday || '',
+      department: department || '',
+      businessUnit: businessUnit || '',
+    })
+    .returning();
 
-  records.push(newRecord);
-  writeRecords(records);
-
-  return NextResponse.json({ success: true, record: newRecord });
+  return NextResponse.json({
+    success: true,
+    record: { ...inserted, scannedAt: inserted.scannedAt.toISOString() },
+  });
 }
 
 // DELETE — reset all attendance records (admin only)
 export async function DELETE() {
   const session = await auth();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  writeRecords([]);
+
+  await db.delete(attendance);
   return NextResponse.json({ success: true });
 }

@@ -1,18 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-
-const DATA_FILE = process.env.NODE_ENV === 'production'
-  ? path.join(os.tmpdir(), 'cnt_registrations.json')
-  : path.join(process.cwd(), 'data', 'registrations.json');
-
-function ensureFile() {
-  const dir = path.dirname(DATA_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '[]', 'utf-8');
-}
+import { db } from '@/lib/db';
+import { registrations } from '@/lib/schema';
+import { eq, ilike, asc } from 'drizzle-orm';
 
 export interface RegistrationRecord {
   id: string;
@@ -24,25 +14,27 @@ export interface RegistrationRecord {
   registeredAt: string;
 }
 
-function readRecords(): RegistrationRecord[] {
-  ensureFile();
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
-  } catch {
-    return [];
-  }
-}
-
-function writeRecords(records: RegistrationRecord[]) {
-  ensureFile();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(records, null, 2), 'utf-8');
-}
-
 // GET — list all registrations (admin only)
 export async function GET() {
   const session = await auth();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  return NextResponse.json(readRecords());
+
+  const rows = await db
+    .select()
+    .from(registrations)
+    .orderBy(asc(registrations.registeredAt));
+
+  const records: RegistrationRecord[] = rows.map(r => ({
+    id: r.id,
+    name: r.name,
+    email: r.email,
+    birthday: r.birthday,
+    department: r.department,
+    businessUnit: r.businessUnit,
+    registeredAt: r.registeredAt.toISOString(),
+  }));
+
+  return NextResponse.json(records);
 }
 
 // POST — save a new registration (public, called on form submit)
@@ -54,34 +46,46 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
-  const records = readRecords();
+  const normalizedEmail = email.trim().toLowerCase();
 
-  // Prevent duplicate registrations
-  const already = records.find(r => r.email.toLowerCase() === email.toLowerCase());
-  if (already) {
-    return NextResponse.json({ duplicate: true, record: already });
+  // Prevent duplicate registrations by email
+  const existing = await db
+    .select()
+    .from(registrations)
+    .where(ilike(registrations.email, normalizedEmail))
+    .limit(1);
+
+  if (existing.length > 0) {
+    const r = existing[0];
+    return NextResponse.json({
+      duplicate: true,
+      record: { ...r, registeredAt: r.registeredAt.toISOString() },
+    });
   }
 
-  const newRecord: RegistrationRecord = {
-    id,
-    name: name || '',
-    email,
-    birthday: birthday || '',
-    department: department || '',
-    businessUnit: businessUnit || '',
-    registeredAt: new Date().toISOString(),
-  };
+  const [inserted] = await db
+    .insert(registrations)
+    .values({
+      id,
+      name: name || '',
+      email: normalizedEmail,
+      birthday: birthday || '',
+      department: department || '',
+      businessUnit: businessUnit || '',
+    })
+    .returning();
 
-  records.push(newRecord);
-  writeRecords(records);
-
-  return NextResponse.json({ success: true, record: newRecord });
+  return NextResponse.json({
+    success: true,
+    record: { ...inserted, registeredAt: inserted.registeredAt.toISOString() },
+  });
 }
 
 // DELETE — reset all registrations (admin only)
 export async function DELETE() {
   const session = await auth();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  writeRecords([]);
+
+  await db.delete(registrations);
   return NextResponse.json({ success: true });
 }
